@@ -3,6 +3,7 @@ import json
 import time
 import requests
 import re
+import pyshorteners
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from datetime import datetime
@@ -15,18 +16,28 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 
 # 이미 처리된 게시물 URL 저장 파일
 DB_FILE = "processed_urls.json"
+
+def shorten_url(url):
+    """pyshorteners를 사용하여 긴 URL을 단축합니다. (TinyURL 서비스 사용)"""
+    try:
+        s = pyshorteners.Shortener()
+        return s.tinyurl.short(url)
+    except Exception as e:
+        # 단축 실패 시 원본 URL 반환
+        return url
 
 def get_config():
     load_dotenv(override=True)
     return {
         "BOT_TOKEN": os.getenv("TELEGRAM_BOT_TOKEN"),
         "CHAT_ID": os.getenv("TELEGRAM_CHAT_ID"),
+        "GOOGLE_CHAT_WEBHOOK_URL": os.getenv("GOOGLE_CHAT_WEBHOOK_URL"),
         "TARGET_URLS": [url.strip() for url in os.getenv("TARGET_URLS", "").split(",") if url.strip()],
         "KEYWORDS": [k.strip() for k in os.getenv("KEYWORDS", "").split(",") if k.strip()],
+        "EXCLUDE_KEYWORDS": [k.strip() for k in os.getenv("EXCLUDE_KEYWORDS", "").split(",") if k.strip()],
         "CHECK_INTERVAL": int(os.getenv("CHECK_INTERVAL_SECONDS", 60))
     }
 
@@ -44,23 +55,61 @@ def save_processed_urls(urls):
         json.dump(list(urls), f, ensure_ascii=False, indent=2)
 
 def send_telegram_message(config, title, url, site_url, matched_keyword):
+    if not config["BOT_TOKEN"] or not config["CHAT_ID"]:
+        return
+    
+    # URL 단축 적용
+    short_url_val = shorten_url(url)
+    short_site_url = shorten_url(site_url)
+    
     message = (
         f"🔔 [새 게시물 알림]\n\n"
         f"<b>키워드:</b> #{matched_keyword}\n"
-        f"<b>출처:</b> {site_url}\n"
+        f"<b>출처:</b> {short_site_url}\n"
         f"<b>제목:</b> {title}\n"
-        f"<b>링크:</b> {url}"
+        f"<b>링크:</b> {short_url_val}"
     )
     api_url = f"https://api.telegram.org/bot{config['BOT_TOKEN']}/sendMessage"
     payload = {"chat_id": config["CHAT_ID"], "text": message, "parse_mode": "HTML"}
     try:
         response = requests.post(api_url, data=payload, timeout=10)
         if response.status_code == 200:
-            print(f"[{datetime.now()}] 알림 전송 성공: {title} (키워드: {matched_keyword})")
+            print(f"[{datetime.now()}] 텔레그램 알림 전송 성공: {title} (키워드: {matched_keyword})")
         else:
-            print(f"[{datetime.now()}] 알림 전송 실패: {response.text}")
+            print(f"[{datetime.now()}] 텔레그램 알림 전송 실패: {response.text}")
     except Exception as e:
         print(f"[{datetime.now()}] 텔레그램 전송 중 오류 발생: {e}")
+
+def send_google_chat_message(config, title, url, site_url, matched_keyword):
+    webhook_url = config.get("GOOGLE_CHAT_WEBHOOK_URL")
+    if not webhook_url:
+        return
+    
+    # URL 단축 적용
+    short_url_val = shorten_url(url)
+    short_site_url = shorten_url(site_url)
+    
+    message = (
+        f"🔔 *[새 게시물 알림]*\n\n"
+        f"*키워드:* #{matched_keyword}\n"
+        f"*출처:* {short_site_url}\n"
+        f"*제목:* {title}\n"
+        f"*링크:* {short_url_val}"
+    )
+    
+    payload = {"text": message}
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print(f"[{datetime.now()}] 구글챗 알림 전송 성공: {title}")
+        else:
+            print(f"[{datetime.now()}] 구글챗 알림 전송 실패: {response.text}")
+    except Exception as e:
+        print(f"[{datetime.now()}] 구글챗 전송 중 오류 발생: {e}")
+
+def send_notifications(config, title, url, site_url, matched_keyword):
+    send_telegram_message(config, title, url, site_url, matched_keyword)
+    send_google_chat_message(config, title, url, site_url, matched_keyword)
 
 def get_links_via_selenium(target_url):
     """Selenium을 사용하여 렌더링된 페이지의 링크를 추출합니다."""
@@ -73,33 +122,59 @@ def get_links_via_selenium(target_url):
     chrome_options.add_argument("--disable-gpu") # WSL 환경에서 필수인 경우가 많음
     chrome_options.add_argument("--remote-debugging-port=9222") # 포트 충돌 방지
     chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.binary_location = "/usr/bin/google-chrome"
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
     driver = None
     extracted_data = []
     
     try:
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        service = Service(executable_path="/home/lupin/chromedriver-linux64/chromedriver")
+        driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.get(target_url)
         
         # 게시판 리스트가 로드될 때까지 대기 (최대 10초)
         wait = WebDriverWait(driver, 10)
         
-        # gsp.kocca.kr 특화: 게시판 tbody가 나타날 때까지 대기
+        # 사이트별 로딩 대기 및 전처리
         if "gsp.kocca.kr" in target_url:
             wait.until(EC.presence_of_element_located((By.TAG_NAME, "tbody")))
-        
+        elif "bizinfo.go.kr" in target_url:
+            # txt_list 대신 게시물 링크를 포함하는 txt_l 클래스 대기
+            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "txt_l")))
+        elif "startup-plus.kr" in target_url:
+            # 게시판 형태인 bl_board_unit 요소가 나타날 때까지 대기
+            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "bl_board_unit")))
+            time.sleep(2)
+
         # 페이지 소스를 가져와서 BeautifulSoup으로 파싱
         soup = BeautifulSoup(driver.page_source, "html.parser")
+
+
+        # 스타트업플러스 게시판 특화 처리
+        if "startup-plus.kr" in target_url:
+            board_units = soup.find_all(class_="bl_board_unit")
+            for unit in board_units:
+                link_tag = unit.find("a", href=True)
+                if link_tag and "/project/" in link_tag["href"]:
+                    href = urljoin(target_url, link_tag["href"])
+                    # 제목은 bl_board_subject 또는 a 태그 내부 텍스트
+                    title_tag = unit.find(class_="bl_board_subject")
+                    title = title_tag.get_text(strip=True) if title_tag else link_tag.get_text(strip=True)
+                    if title:
+                        extracted_data.append({"title": title, "href": href})
+            return extracted_data # 스타트업플러스는 여기서 종료
+
         links = soup.find_all("a", href=True)
-        
+
         for link in links:
             title = link.get_text(strip=True)
             href = link["href"]
             onclick = link.get("onclick", "")
-            
+
             # GSP 사이트 특수 처리 (javascript:goView, contentsView 등)
             if "gsp.kocca.kr" in target_url:
+
                 combined = str(href) + str(onclick)
                 
                 # 1. goView('1', '345') 형태 처리
@@ -129,6 +204,27 @@ def get_links_via_selenium(target_url):
                     c_id = qs.get("board_contents_id") or qs.get("contents_id")
                     if c_id:
                         href = f"https://gsp.kocca.kr/web/board/boardContentsViewPage.do?board_id={b_id}&board_contents_id={c_id[0]}"
+
+            # Bizinfo 사이트 특수 처리
+            elif "bizinfo.go.kr" in target_url:
+                if "selectSIIA200Detail.do" in href:
+                    if not title: # 제목이 없는 경우 부모 요소나 이미지 alt 확인
+                        title = link.get("title", "").strip()
+                    if not title:
+                        parent_text = link.parent.get_text(strip=True)
+                        if parent_text:
+                            title = parent_text
+
+            # StartupPlus 사이트 특수 처리
+            elif "startup-plus.kr" in target_url:
+                if "/project/" in href and "apply" not in href:
+                    if not title or title in ["Shortcuts", "Shortcut", "Apply"]:
+                        # 카드 형태에서 제목 추출 시도
+                        parent = link.find_parent()
+                        if parent:
+                            # Accelerating2026년... 형태에서 카테고리명 등을 제외하려 노력
+                            title = parent.get_text(strip=True).replace("Shortcuts", "").replace("Shortcut", "").replace("Apply", "")
+                            # 너무 길면 자르거나 특정 키워드(공고) 주변만 추출할 수도 있음
             
             if not href.startswith("http") and not href.startswith("javascript"):
                 href = urljoin(target_url, href)
@@ -151,15 +247,28 @@ def monitor_sites(config, processed_urls):
         print(f"[{datetime.now()}] 모니터링 시작: {target_url}")
         
         try:
-            # GSP 사이트이거나 특별히 렌더링이 필요한 사이트인 경우 Selenium 사용
-            if "gsp.kocca.kr" in target_url or "kocca.kr" in target_url:
+            # 특정 도메인은 Selenium 사용, 그 외는 requests 사용
+            # kocca.kr (PIMS)는 requests가 더 잘 작동하므로 gsp.kocca.kr만 Selenium 사용 유지
+            if any(domain in target_url for domain in ["gsp.kocca.kr", "bizinfo.go.kr", "startup-plus.kr"]):
                 posts = get_links_via_selenium(target_url)
             else:
                 # 일반 사이트는 requests로 빠르게 처리
                 headers = {"User-Agent": "Mozilla/5.0"}
                 response = requests.get(target_url, headers=headers, timeout=15)
                 soup = BeautifulSoup(response.text, "html.parser")
-                posts = [{"title": a.get_text(strip=True), "href": urljoin(target_url, a["href"])} for a in soup.find_all("a", href=True)]
+                
+                posts = []
+                for a in soup.find_all("a", href=True):
+                    title = a.get_text(strip=True)
+                    # 제목이 없는 경우 title 속성이나 부모 요소 텍스트 확인 (NIPA 등 대응)
+                    if not title:
+                        title = a.get("title", "").strip()
+                    if not title:
+                        # <td> 안에 <a>가 있는 경우 <td>의 다른 텍스트 확인
+                        title = a.parent.get_text(strip=True)
+                        
+                    if title and len(title) > 2:
+                        posts.append({"title": title, "href": urljoin(target_url, a["href"])})
 
             for post in posts:
                 title = post["title"]
@@ -172,8 +281,19 @@ def monitor_sites(config, processed_urls):
                     else:
                         href += "&menuNo=204135"
 
-                if href in processed_urls:
-                    # 매칭된 키워드 찾기 (AND 조건 지원: AI+수행기관)
+                if href not in processed_urls:
+                    # 1. 제외 키워드 먼저 확인
+                    is_excluded = False
+                    for ex_kw in config["EXCLUDE_KEYWORDS"]:
+                        if ex_kw in title:
+                            is_excluded = True
+                            break
+                    
+                    if is_excluded:
+                        processed_urls.add(href) # 중복 알림 방지를 위해 처리 완료로 간주
+                        continue
+
+                    # 2. 매칭된 키워드 찾기 (AND 조건 지원: AI+수행기관)
                     matched_keyword = None
                     for kw_entry in config["KEYWORDS"]:
                         if "+" in kw_entry:
@@ -189,7 +309,7 @@ def monitor_sites(config, processed_urls):
                                 break
 
                     if matched_keyword:
-                        send_telegram_message(config, title, href, target_url, matched_keyword)
+                        send_notifications(config, title, href, target_url, matched_keyword)
                         processed_urls.add(href)
                         new_found = True
 
@@ -207,8 +327,11 @@ def main():
     while True:
         try:
             config = get_config()
-            if not config["BOT_TOKEN"] or not config["CHAT_ID"] or not config["TARGET_URLS"]:
-                print(f"[{datetime.now()}] 설정 오류: .env 파일을 확인하세요.")
+            has_telegram = config.get("BOT_TOKEN") and config.get("CHAT_ID")
+            has_google_chat = config.get("GOOGLE_CHAT_WEBHOOK_URL")
+            
+            if not (has_telegram or has_google_chat) or not config["TARGET_URLS"]:
+                print(f"[{datetime.now()}] 설정 오류: .env 파일을 확인하세요 (텔레그램 또는 구글챗 설정 필수).")
                 time.sleep(10)
                 continue
             if monitor_sites(config, processed_urls):

@@ -1,5 +1,5 @@
 [project]
-name = "gov-bizmon"
+name = "govbiz_mon"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -9,6 +9,6 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "requests>=2.32.5",
     "schedule>=1.2.2",
-    "selenium>=4.41.0",
-    "webdriver-manager>=4.0.2",
+    "selenium>=4.11.0",
+    "pyshorteners>=1.0.1",
 ]
