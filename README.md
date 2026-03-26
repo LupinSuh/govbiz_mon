@@ -1,76 +1,61 @@
-# 웹사이트 키워드 모니터링 및 알림 프로그램 (V3)
+# 웹사이트 키워드 모니터링 및 알림 프로그램 (V4)
 
-이 프로그램은 특정 공공기관 및 스타트업 지원 사업 공고 페이지를 실시간으로 모니터링하여, 설정한 키워드가 포함된 새로운 게시물이 올라오면 **텔레그램** 및 **구글 챗(Google Chat)**으로 알림을 보내줍니다.
+이 프로그램은 정부 지원 사업, 공공기관 공고 및 스타트업 프로젝트 페이지를 실시간으로 모니터링하여, 설정한 키워드가 포함된 새 게시물을 다중 소셜 서비스(텔레그램, 구글 챗, 디스코드, 슬랙)로 즉시 전송합니다.
 
 ## 🚀 주요 기능
 
-- **실시간 설정 반영**: 프로그램 실행 중에도 `.env` 파일만 수정하면 다음 주기부터 즉시 반영됩니다.
-- **다중 채널 알림**: 텔레그램(Telegram)과 구글 챗(Webhook)을 동시에 지원합니다.
-- **Selenium & Requests 혼합 엔진**: 
-    - 일반 페이지는 **Requests**로 빠르게 처리.
-    - 자바스크립트 렌더링이 필요한 CSR(Client Side Rendering) 페이지는 **Selenium**으로 자동 처리.
-- **URL 단축 서비스**: 긴 공고 링크와 출처 URL을 **TinyURL(pyshorteners)**을 통해 짧게 변환하여 가독성 높은 알림을 제공합니다.
-- **지능형 키워드 필터링**:
-    - **OR 조건**: 쉼표(`,`)로 구분하여 여러 키워드 중 하나라도 포함되면 알림.
-    - **AND 조건**: `+` 기호를 사용하여 여러 단어가 모두 포함되어야 알림 (예: `AI+수행기관`).
-- **제외 키워드 지원**: 알림을 받고 싶지 않은 특정 단어를 포함한 게시물은 제외할 수 있습니다.
-- **특화 사이트 지원**:
-    - **기업마당(Bizinfo)**: 상세 공고 링크 및 제목 정밀 추출.
-    - **스타트업플러스(Startup Plus)**: 하단 게시판 영역(`bl_board_unit`) 데이터 추출 최적화.
-    - **KOCCA PIMS & GSP**: 복잡한 자바스크립트 기반 링크 및 접근 권한 문제 해결 로직 적용.
+- **OS 무관 (OS-Agnostic)**: Windows, Linux(WSL), macOS 어디서든 별도의 크롬 드라이버 설치 없이 즉시 실행 가능 (`webdriver-manager` 적용).
+- **다중 채널 알림**: 텔레그램, 구글 챗, **디스코드**, **슬랙** 웹훅을 통한 동시 알림 지원.
+- **직결 하이퍼링크**: 중간 단축 사이트를 거치지 않고, 제목 클릭 시 원본 공고 페이지로 **직접 연결**되는 깔끔한 메시지 UI.
+- **지능형 엔진**: 
+    - 일반 페이지: 가벼운 **Requests** 엔진으로 고속 처리.
+    - 동적 페이지: 자바스크립트 렌더링이 필요한 CSR 사이트는 **Selenium**으로 자동 처리.
+- **정밀 필터링**:
+    - **OR 조건**: 쉼표(`,`)로 구분된 단어 중 하나라도 포함 시 알림.
+    - **AND 조건**: `+` 기호를 사용하여 여러 단어가 모두 포함되어야 알림 (예: `AI+바우처`).
+- **제외 키워드**: 알림에서 제외하고 싶은 단어(예: 마감, 종료) 설정 가능.
+- **특화 사이트 최적화**: 기업마당(Bizinfo), KOCCA PIMS/GSP, 스타트업플러스 등 주요 공고 사이트 맞춤형 데이터 추출 로직 탑재.
 
 ## 🛠 설치 및 설정
 
-### 1. 의존성 설치
+### 1. 의존성 설치 (`uv` 권장)
 ```bash
-# uv를 사용하는 경우 (권장)
+# uv를 사용하는 경우
 uv sync
 
-# pip를 사용하는 경우
-pip install requests beautifulsoup4 python-dotenv selenium webdriver-manager pyshorteners
+# 일반 pip 사용 시
+pip install beautifulsoup4 python-dotenv requests schedule selenium webdriver-manager
 ```
 
-### 2. 크롬 브라우저 설치 (Linux/WSL 환경 필수)
-Selenium 작동을 위해 서버/WSL 환경에 크롬 브라우저가 설치되어 있어야 합니다.
-```bash
-wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-sudo apt install ./google-chrome-stable_current_amd64.deb
-```
-
-### 3. 환경 변수 설정 (`.env`)
-`.env` 파일에 다음과 같이 설정을 입력합니다.
+### 2. 환경 변수 설정 (`.env`)
+`.env.example` 파일을 참고하여 `.env` 파일을 생성하고 필요한 토큰/웹훅 URL을 입력하세요.
 
 ```env
-TELEGRAM_BOT_TOKEN=your_token
-TELEGRAM_CHAT_ID=your_id
-GOOGLE_CHAT_WEBHOOK_URL=your_webhook_url
+# 알림 설정 (필요한 서비스만 입력)
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+GOOGLE_CHAT_WEBHOOK_URL=...
+DISCORD_WEBHOOK_URL=...
+SLACK_WEBHOOK_URL=...
 
-# 감시할 URL (쉼표로 구분)
-TARGET_URLS=https://www.bizinfo.go.kr/sii/siia/selectSIIA200View.do?...,https://www.startup-plus.kr/project,https://www.nipa.kr/home/2-2?curPage=1
-
-# 키워드 설정 (쉼표: OR, 플러스: AND)
-KEYWORDS=AI+수행기관, 지원사업, 바우처, 공고
-
-# 제외 키워드
-EXCLUDE_KEYWORDS=결과발표, 종료, 마감
-
-# 확인 주기 (초 단위)
+# 감시 설정
+TARGET_URLS=URL1, URL2...
+KEYWORDS=AI+수행기관, 지원사업
+EXCLUDE_KEYWORDS=마감, 종료
 CHECK_INTERVAL_SECONDS=60
 ```
 
-## 📖 사용 방법
+## 📖 실행 방법
 
-### 프로그램 실행
 ```bash
+# uv를 통한 실행 (추천)
+uv run python main.py
+
+# 일반 실행
 python main.py
 ```
 
-### 기록 초기화
-기존 게시물 알림을 다시 받고 싶다면 DB 파일을 삭제하세요.
-```bash
-rm processed_urls.json
-```
-
 ## ⚠️ 주의 사항
-- **확인 주기**: 너무 짧은 주기는 사이트로부터 IP 차단(Blocking)을 유발할 수 있으므로 최소 60초 이상을 권장합니다.
-- **Chrome/Driver**: 브라우저 버전과 ChromeDriver 버전이 일치하지 않을 경우 실행 오류가 발생할 수 있습니다.
+- **Chrome 설치 필수**: 본체에 구글 크롬 브라우저가 설치되어 있어야 합니다 (드라이버는 프로그램이 자동 관리합니다).
+- **차단 방지**: 너무 짧은 확인 주기(예: 10초 미만)는 사이트로부터 IP 차단을 유발할 수 있으므로 60초 이상을 권장합니다.
+- **파일 권한**: 프로그램이 `processed_urls.json` 파일에 쓰기 권한을 가지고 있어야 합니다.

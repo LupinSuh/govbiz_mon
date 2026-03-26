@@ -3,7 +3,6 @@ import json
 import time
 import requests
 import re
-import pyshorteners
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from datetime import datetime
@@ -16,18 +15,10 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 # 이미 처리된 게시물 URL 저장 파일
 DB_FILE = "processed_urls.json"
-
-def shorten_url(url):
-    """pyshorteners를 사용하여 긴 URL을 단축합니다. (TinyURL 서비스 사용)"""
-    try:
-        s = pyshorteners.Shortener()
-        return s.tinyurl.short(url)
-    except Exception as e:
-        # 단축 실패 시 원본 URL 반환
-        return url
 
 def get_config():
     load_dotenv(override=True)
@@ -35,6 +26,8 @@ def get_config():
         "BOT_TOKEN": os.getenv("TELEGRAM_BOT_TOKEN"),
         "CHAT_ID": os.getenv("TELEGRAM_CHAT_ID"),
         "GOOGLE_CHAT_WEBHOOK_URL": os.getenv("GOOGLE_CHAT_WEBHOOK_URL"),
+        "DISCORD_WEBHOOK_URL": os.getenv("DISCORD_WEBHOOK_URL"),
+        "SLACK_WEBHOOK_URL": os.getenv("SLACK_WEBHOOK_URL"),
         "TARGET_URLS": [url.strip() for url in os.getenv("TARGET_URLS", "").split(",") if url.strip()],
         "KEYWORDS": [k.strip() for k in os.getenv("KEYWORDS", "").split(",") if k.strip()],
         "EXCLUDE_KEYWORDS": [k.strip() for k in os.getenv("EXCLUDE_KEYWORDS", "").split(",") if k.strip()],
@@ -58,19 +51,15 @@ def send_telegram_message(config, title, url, site_url, matched_keyword):
     if not config["BOT_TOKEN"] or not config["CHAT_ID"]:
         return
     
-    # URL 단축 적용
-    short_url_val = shorten_url(url)
-    short_site_url = shorten_url(site_url)
-    
+    # 하이퍼링크 적용 (중간 사이트 없이 직결)
     message = (
-        f"🔔 [새 게시물 알림]\n\n"
+        f"🔔 <b>[새 게시물 알림]</b>\n\n"
         f"<b>키워드:</b> #{matched_keyword}\n"
-        f"<b>출처:</b> {short_site_url}\n"
-        f"<b>제목:</b> {title}\n"
-        f"<b>링크:</b> {short_url_val}"
+        f"<b>출처:</b> <a href='{site_url}'>사이트 바로가기</a>\n"
+        f"<b>제목:</b> <a href='{url}'>{title}</a>"
     )
     api_url = f"https://api.telegram.org/bot{config['BOT_TOKEN']}/sendMessage"
-    payload = {"chat_id": config["CHAT_ID"], "text": message, "parse_mode": "HTML"}
+    payload = {"chat_id": config["CHAT_ID"], "text": message, "parse_mode": "HTML", "disable_web_page_preview": False}
     try:
         response = requests.post(api_url, data=payload, timeout=10)
         if response.status_code == 200:
@@ -85,16 +74,12 @@ def send_google_chat_message(config, title, url, site_url, matched_keyword):
     if not webhook_url:
         return
     
-    # URL 단축 적용
-    short_url_val = shorten_url(url)
-    short_site_url = shorten_url(site_url)
-    
+    # 하이퍼링크 적용 (중간 사이트 없이 직결)
     message = (
         f"🔔 *[새 게시물 알림]*\n\n"
         f"*키워드:* #{matched_keyword}\n"
-        f"*출처:* {short_site_url}\n"
-        f"*제목:* {title}\n"
-        f"*링크:* {short_url_val}"
+        f"*출처:* <{site_url}|사이트 바로가기>\n"
+        f"*제목:* <{url}|{title}>"
     )
     
     payload = {"text": message}
@@ -107,9 +92,57 @@ def send_google_chat_message(config, title, url, site_url, matched_keyword):
     except Exception as e:
         print(f"[{datetime.now()}] 구글챗 전송 중 오류 발생: {e}")
 
+def send_discord_message(config, title, url, site_url, matched_keyword):
+    webhook_url = config.get("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        return
+    
+    # 디스코드 마크다운 하이퍼링크 [텍스트](URL)
+    message = (
+        f"🔔 **[새 게시물 알림]**\n\n"
+        f"**키워드:** #{matched_keyword}\n"
+        f"**출처:** [사이트 바로가기]({site_url})\n"
+        f"**제목:** [{title}]({url})"
+    )
+    
+    payload = {"content": message}
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        if response.status_code in [200, 204]:
+            print(f"[{datetime.now()}] 디스코드 알림 전송 성공: {title}")
+        else:
+            print(f"[{datetime.now()}] 디스코드 알림 전송 실패: {response.text}")
+    except Exception as e:
+        print(f"[{datetime.now()}] 디스코드 전송 중 오류 발생: {e}")
+
+def send_slack_message(config, title, url, site_url, matched_keyword):
+    webhook_url = config.get("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        return
+    
+    # 슬랙 마크다운 하이퍼링크 <URL|텍스트>
+    message = (
+        f"🔔 *[새 게시물 알림]*\n\n"
+        f"*키워드:* #{matched_keyword}\n"
+        f"*출처:* <{site_url}|사이트 바로가기>\n"
+        f"*제목:* <{url}|{title}>"
+    )
+    
+    payload = {"text": message}
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print(f"[{datetime.now()}] 슬랙 알림 전송 성공: {title}")
+        else:
+            print(f"[{datetime.now()}] 슬랙 알림 전송 실패: {response.text}")
+    except Exception as e:
+        print(f"[{datetime.now()}] 슬랙 전송 중 오류 발생: {e}")
+
 def send_notifications(config, title, url, site_url, matched_keyword):
     send_telegram_message(config, title, url, site_url, matched_keyword)
     send_google_chat_message(config, title, url, site_url, matched_keyword)
+    send_discord_message(config, title, url, site_url, matched_keyword)
+    send_slack_message(config, title, url, site_url, matched_keyword)
 
 def get_links_via_selenium(target_url):
     """Selenium을 사용하여 렌더링된 페이지의 링크를 추출합니다."""
@@ -120,16 +153,14 @@ def get_links_via_selenium(target_url):
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu") # WSL 환경에서 필수인 경우가 많음
-    chrome_options.add_argument("--remote-debugging-port=9222") # 포트 충돌 방지
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.binary_location = "/usr/bin/google-chrome"
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
     driver = None
     extracted_data = []
     
     try:
-        service = Service(executable_path="/home/lupin/chromedriver-linux64/chromedriver")
+        service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.get(target_url)
         

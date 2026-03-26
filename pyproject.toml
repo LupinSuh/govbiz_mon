@@ -1,7 +1,7 @@
 [project]
 name = "govbiz_mon"
 version = "0.1.0"
-description = "Add your description here"
+description = "Web monitoring tool for government & startup project notices with multi-channel notifications (Telegram, Google Chat, Discord, Slack)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -10,5 +10,5 @@ dependencies = [
     "requests>=2.32.5",
     "schedule>=1.2.2",
     "selenium>=4.11.0",
-    "pyshorteners>=1.0.1",
+    "webdriver-manager>=4.0.2",
 ]
