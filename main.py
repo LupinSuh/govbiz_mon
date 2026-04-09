@@ -38,24 +38,28 @@ def load_processed_urls():
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
-                return set(json.load(f))
+                data = json.load(f)
+                if isinstance(data, list):
+                    # 기존 리스트 형식을 딕셔너리 형식으로 마이그레이션
+                    return {url: datetime.now().strftime("%Y-%m-%d %H:%M:%S") for url in data}
+                return data
         except:
-            return set()
-    return set()
+            return {}
+    return {}
 
-def save_processed_urls(urls):
+def save_processed_urls(urls_dict):
     with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(urls), f, ensure_ascii=False, indent=2)
+        json.dump(urls_dict, f, ensure_ascii=False, indent=2)
 
 def send_telegram_message(config, title, url, site_url, matched_keyword):
     if not config["BOT_TOKEN"] or not config["CHAT_ID"]:
         return
     
-    # 하이퍼링크 적용 (중간 사이트 없이 직결)
+    domain = urlparse(site_url).netloc
     message = (
         f"🔔 <b>[새 게시물 알림]</b>\n\n"
         f"<b>키워드:</b> #{matched_keyword}\n"
-        f"<b>출처:</b> <a href='{site_url}'>사이트 바로가기</a>\n"
+        f"<b>출처:</b> {domain}\n"
         f"<b>제목:</b> <a href='{url}'>{title}</a>"
     )
     api_url = f"https://api.telegram.org/bot{config['BOT_TOKEN']}/sendMessage"
@@ -74,11 +78,11 @@ def send_google_chat_message(config, title, url, site_url, matched_keyword):
     if not webhook_url:
         return
     
-    # 하이퍼링크 적용 (중간 사이트 없이 직결)
+    domain = urlparse(site_url).netloc
     message = (
         f"🔔 *[새 게시물 알림]*\n\n"
         f"*키워드:* #{matched_keyword}\n"
-        f"*출처:* <{site_url}|사이트 바로가기>\n"
+        f"*출처:* {domain}\n"
         f"*제목:* <{url}|{title}>"
     )
     
@@ -97,11 +101,11 @@ def send_discord_message(config, title, url, site_url, matched_keyword):
     if not webhook_url:
         return
     
-    # 디스코드 마크다운 하이퍼링크 [텍스트](URL)
+    domain = urlparse(site_url).netloc
     message = (
         f"🔔 **[새 게시물 알림]**\n\n"
         f"**키워드:** #{matched_keyword}\n"
-        f"**출처:** [사이트 바로가기]({site_url})\n"
+        f"**출처:** {domain}\n"
         f"**제목:** [{title}]({url})"
     )
     
@@ -120,11 +124,11 @@ def send_slack_message(config, title, url, site_url, matched_keyword):
     if not webhook_url:
         return
     
-    # 슬랙 마크다운 하이퍼링크 <URL|텍스트>
+    domain = urlparse(site_url).netloc
     message = (
         f"🔔 *[새 게시물 알림]*\n\n"
         f"*키워드:* #{matched_keyword}\n"
-        f"*출처:* <{site_url}|사이트 바로가기>\n"
+        f"*출처:* {domain}\n"
         f"*제목:* <{url}|{title}>"
     )
     
@@ -288,9 +292,20 @@ def monitor_sites(config, processed_urls):
                 response = requests.get(target_url, headers=headers, timeout=15)
                 soup = BeautifulSoup(response.text, "html.parser")
                 
+                # 게시판 영역만 추출 시도
+                content_area = soup.find("table") or soup.find(class_="p-list") or soup.find(class_="board-list") or soup.find(id="content") or soup
+                
                 posts = []
-                for a in soup.find_all("a", href=True):
+                for a in content_area.find_all("a", href=True):
                     title = a.get_text(strip=True)
+                    href = a["href"]
+                    
+                    # 사이트별 링크 필터링
+                    if "kocca.kr/kocca/pims" in target_url:
+                        if "view.do" not in href: continue
+                    elif "nipa.kr/home/2-2" in target_url:
+                        if not re.search(r"/home/2-2/\d+", href): continue
+
                     # 제목이 없는 경우 title 속성이나 부모 요소 텍스트 확인 (NIPA 등 대응)
                     if not title:
                         title = a.get("title", "").strip()
@@ -299,7 +314,7 @@ def monitor_sites(config, processed_urls):
                         title = a.parent.get_text(strip=True)
                         
                     if title and len(title) > 2:
-                        posts.append({"title": title, "href": urljoin(target_url, a["href"])})
+                        posts.append({"title": title, "href": urljoin(target_url, href)})
 
             for post in posts:
                 title = post["title"]
@@ -321,7 +336,8 @@ def monitor_sites(config, processed_urls):
                             break
                     
                     if is_excluded:
-                        processed_urls.add(href) # 중복 알림 방지를 위해 처리 완료로 간주
+                        # 중복 알림 방지를 위해 처리 완료로 간주
+                        processed_urls[href] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         continue
 
                     # 2. 매칭된 키워드 찾기 (AND 조건 지원: AI+수행기관)
@@ -341,7 +357,7 @@ def monitor_sites(config, processed_urls):
 
                     if matched_keyword:
                         send_notifications(config, title, href, target_url, matched_keyword)
-                        processed_urls.add(href)
+                        processed_urls[href] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         new_found = True
 
             
